@@ -20,7 +20,13 @@ impl Version {
         let minor = ((id % 1_000_000) / 10_000) as u8;
         let patch = ((id % 10_000) / 100) as u8;
 
-        Version { major, minor, patch, is_opensearch, raw }
+        Version {
+            major,
+            minor,
+            patch,
+            is_opensearch,
+            raw,
+        }
     }
 }
 

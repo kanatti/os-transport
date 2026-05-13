@@ -1,12 +1,12 @@
-use std::path::Path;
-use pcap_parser::*;
-use pcap_parser::traits::PcapReaderIterator;
-use etherparse::SlicedPacket;
 use etherparse::NetSlice;
+use etherparse::SlicedPacket;
 use etherparse::TransportSlice;
+use pcap_parser::traits::PcapReaderIterator;
+use pcap_parser::*;
 use std::fs::File;
+use std::path::Path;
 
-use crate::capture::reassembly::{Endpoint, TcpReassembler, ParsedMessage};
+use crate::capture::reassembly::{Endpoint, ParsedMessage, TcpReassembler};
 
 /// Read a pcap file and return all parsed OS transport messages.
 pub fn read_pcap(path: &Path) -> Result<Vec<ParsedMessage>, String> {
@@ -34,7 +34,9 @@ pub fn read_pcap(path: &Path) -> Result<Vec<ParsedMessage>, String> {
             }
             Err(PcapError::Eof) => break,
             Err(PcapError::Incomplete(_)) => {
-                reader.refill().map_err(|e| format!("refill error: {:?}", e))?;
+                reader
+                    .refill()
+                    .map_err(|e| format!("refill error: {:?}", e))?;
             }
             Err(e) => return Err(format!("pcap error: {:?}", e)),
         }
@@ -46,15 +48,13 @@ pub fn read_pcap(path: &Path) -> Result<Vec<ParsedMessage>, String> {
 fn process_packet(reassembler: &mut TcpReassembler, data: &[u8], link_type: Linktype, ts_us: u64) {
     let parsed = match link_type {
         Linktype::NULL => {
-            if data.len() <= 4 { return; }
+            if data.len() <= 4 {
+                return;
+            }
             SlicedPacket::from_ip(&data[4..])
         }
-        Linktype::ETHERNET => {
-            SlicedPacket::from_ethernet(data)
-        }
-        Linktype::LINUX_SLL => {
-            SlicedPacket::from_linux_sll(data)
-        }
+        Linktype::ETHERNET => SlicedPacket::from_ethernet(data),
+        Linktype::LINUX_SLL => SlicedPacket::from_linux_sll(data),
         _ => return,
     };
 
@@ -65,9 +65,7 @@ fn process_packet(reassembler: &mut TcpReassembler, data: &[u8], link_type: Link
 
     // Extract src/dst IP
     let (src_addr, dst_addr) = match &parsed.net {
-        Some(NetSlice::Ipv4(ipv4)) => {
-            (ipv4.header().source(), ipv4.header().destination())
-        }
+        Some(NetSlice::Ipv4(ipv4)) => (ipv4.header().source(), ipv4.header().destination()),
         _ => return,
     };
 
@@ -79,8 +77,14 @@ fn process_packet(reassembler: &mut TcpReassembler, data: &[u8], link_type: Link
         _ => return,
     };
 
-    let src = Endpoint { addr: src_addr, port: src_port };
-    let dst = Endpoint { addr: dst_addr, port: dst_port };
+    let src = Endpoint {
+        addr: src_addr,
+        port: src_port,
+    };
+    let dst = Endpoint {
+        addr: dst_addr,
+        port: dst_port,
+    };
 
     reassembler.add_payload(src, dst, tcp_payload, ts_us);
 }

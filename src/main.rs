@@ -1,5 +1,5 @@
-mod protocol;
 mod capture;
+mod protocol;
 
 use clap::{Parser, Subcommand};
 use std::path::PathBuf;
@@ -46,7 +46,7 @@ fn cmd_decode(hex_str: String) {
         .map(|i| u8::from_str_radix(&clean[i..i + 2], 16).unwrap())
         .collect();
 
-    match protocol::message::Message::parse(&data) {
+    match protocol::Message::parse(&data) {
         Ok((msg, consumed)) => {
             print_message(&msg);
             println!("  Consumed: {} bytes", consumed);
@@ -59,7 +59,7 @@ fn cmd_decode(hex_str: String) {
 }
 
 fn cmd_read(path: PathBuf) {
-    let messages = capture::pcap::read_pcap(&path).unwrap_or_else(|e| {
+    let messages = capture::read_pcap(&path).unwrap_or_else(|e| {
         eprintln!("error: {}", e);
         std::process::exit(1);
     });
@@ -76,7 +76,7 @@ fn cmd_read(path: PathBuf) {
     eprintln!("\n--- {} messages ---", messages.len());
 }
 
-fn print_message(msg: &protocol::message::Message) {
+fn print_message(msg: &protocol::Message) {
     println!("{}", msg);
     if !msg.var_header.request_headers.is_empty() {
         for (k, v) in &msg.var_header.request_headers {
@@ -85,6 +85,6 @@ fn print_message(msg: &protocol::message::Message) {
     }
 }
 
-fn format_endpoint_short(ep: &capture::reassembly::Endpoint) -> String {
+fn format_endpoint_short(ep: &capture::Endpoint) -> String {
     format!(":{}", ep.port)
 }

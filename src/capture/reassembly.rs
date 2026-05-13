@@ -1,6 +1,6 @@
-use std::collections::HashMap;
 use crate::protocol::header::{FIXED_HEADER_SIZE, MAGIC};
 use crate::protocol::message::Message;
+use std::collections::HashMap;
 
 /// One endpoint of a TCP connection.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -11,7 +11,11 @@ pub struct Endpoint {
 
 impl std::fmt::Display for Endpoint {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}.{}.{}.{}:{}", self.addr[0], self.addr[1], self.addr[2], self.addr[3], self.port)
+        write!(
+            f,
+            "{}.{}.{}.{}:{}",
+            self.addr[0], self.addr[1], self.addr[2], self.addr[3], self.port
+        )
     }
 }
 
@@ -67,10 +71,13 @@ impl TcpReassembler {
         }
 
         let key = HalfKey { src, dst };
-        let stream = self.streams.entry(key.clone()).or_insert_with(|| StreamBuffer {
-            data: Vec::new(),
-            first_ts: timestamp_us,
-        });
+        let stream = self
+            .streams
+            .entry(key.clone())
+            .or_insert_with(|| StreamBuffer {
+                data: Vec::new(),
+                first_ts: timestamp_us,
+            });
 
         stream.data.extend_from_slice(payload);
 
@@ -102,8 +109,10 @@ impl TcpReassembler {
 
             // Read message length
             let msg_len = u32::from_be_bytes([
-                stream.data[2], stream.data[3],
-                stream.data[4], stream.data[5],
+                stream.data[2],
+                stream.data[3],
+                stream.data[4],
+                stream.data[5],
             ]) as usize;
 
             let total = 6 + msg_len;

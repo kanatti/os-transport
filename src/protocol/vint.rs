@@ -1,5 +1,4 @@
-/// Read a variable-length encoded 32-bit integer.
-/// Uses 1-5 bytes. MSB of each byte is a continue bit.
+/// Decode a variable-length u32 (1-5 bytes).
 /// Returns (value, bytes_consumed).
 pub fn read_vint(data: &[u8]) -> Result<(u32, usize), &'static str> {
     if data.is_empty() {
@@ -9,6 +8,14 @@ pub fn read_vint(data: &[u8]) -> Result<(u32, usize), &'static str> {
     let mut result: u32 = 0;
     let mut shift: u32 = 0;
 
+    // Byte format: [C|d d d d d d d]
+    //               │ └─── 7 data bits
+    //               └───── continue: 1=more, 0=done
+    // Bytes chain little-endian: byte0=bits[0:6], byte1=bits[7:13], ...
+    //   e.g. 300 = [0xAC, 0x02]
+    //     0xAC → [1|0101100]  bits 0-6  (low)
+    //     0x02 → [0|0000010]  bits 7-13 (high)
+    //     result = 0000010_0101100 = 300
     for i in 0..5 {
         if i >= data.len() {
             return Err("unexpected end of data");
@@ -56,9 +63,10 @@ pub fn read_vlong(data: &[u8]) -> Result<(u64, usize), &'static str> {
     Err("vlong too long (more than 10 bytes)")
 }
 
-/// Read a zigzag-encoded signed 64-bit integer.
-/// Maps: 0→0, 1→-1, 2→1, 3→-2, 4→2, ...
-/// Returns (value, bytes_consumed).
+/// Decode a zigzag-encoded signed i64.
+/// Zigzag maps small magnitudes to small unsigned values regardless of sign:
+///   0 → 0, 1 → -1, 2 → 1, 3 → -2, 4 → 2, 5 → -3, ...
+/// Without zigzag, -1 would need 10 bytes (all bits set). With it, just 1 byte.
 pub fn read_zlong(data: &[u8]) -> Result<(i64, usize), &'static str> {
     let (encoded, consumed) = read_vlong(data)?;
     let decoded = ((encoded >> 1) as i64) ^ -((encoded & 1) as i64);
@@ -87,7 +95,10 @@ mod tests {
     #[test]
     fn test_vint_max() {
         // i32::MAX = 2147483647 → [0xFF, 0xFF, 0xFF, 0xFF, 0x07]
-        assert_eq!(read_vint(&[0xFF, 0xFF, 0xFF, 0xFF, 0x07]), Ok((2147483647, 5)));
+        assert_eq!(
+            read_vint(&[0xFF, 0xFF, 0xFF, 0xFF, 0x07]),
+            Ok((2147483647, 5))
+        );
     }
 
     #[test]

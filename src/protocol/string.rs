@@ -1,7 +1,11 @@
-use crate::protocol::vint::read_vint;
+use crate::protocol::read_vint;
 
 /// Read a length-prefixed UTF-8 string (VInt length + bytes).
 /// Returns (string, bytes_consumed).
+///
+///   [03] [48 65 6C]  →  "Hel", consumed 4
+///    │    └── 3 UTF-8 bytes
+///    └── vint length = 3
 pub fn read_string(data: &[u8]) -> Result<(String, usize), &'static str> {
     let (len, len_bytes) = read_vint(data)?;
     let len = len as usize;
@@ -11,14 +15,18 @@ pub fn read_string(data: &[u8]) -> Result<(String, usize), &'static str> {
         return Err("not enough data for string");
     }
 
-    let s = std::str::from_utf8(&data[len_bytes..total])
-        .map_err(|_| "invalid UTF-8 in string")?;
+    let s = std::str::from_utf8(&data[len_bytes..total]).map_err(|_| "invalid UTF-8 in string")?;
 
     Ok((s.to_string(), total))
 }
 
 /// Read an optional string (boolean prefix + string if true).
 /// Returns (Option<String>, bytes_consumed).
+///
+///   [00]              →  None,        consumed 1
+///   [01] [02] [4F 4B] →  Some("OK"),  consumed 4
+///    │    └── vint(2) + "OK"
+///    └── present flag
 pub fn read_optional_string(data: &[u8]) -> Result<(Option<String>, usize), &'static str> {
     if data.is_empty() {
         return Err("not enough data for optional string");
@@ -71,6 +79,9 @@ mod tests {
     #[test]
     fn test_read_optional_string_some() {
         let data = [0x01, 0x04, 0x74, 0x65, 0x73, 0x74]; // true + "test"
-        assert_eq!(read_optional_string(&data), Ok((Some("test".to_string()), 6)));
+        assert_eq!(
+            read_optional_string(&data),
+            Ok((Some("test".to_string()), 6))
+        );
     }
 }
