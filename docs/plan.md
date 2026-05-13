@@ -4,160 +4,152 @@
 
 A Rust CLI tool for inspecting OpenSearch's internal binary transport protocol (port 9300). Think `tcpdump` meets Wireshark, but purpose-built for OpenSearch. Decode the wire format into human-readable output, match request/response pairs, show latencies, and help debug cluster communication issues.
 
-## Use Cases
+## Status
 
-1. **Debugging cluster issues** — see what actions are flying between nodes, spot errors, find slow responses
-2. **Performance analysis** — measure serialization sizes, compression ratios, request latencies per action
-3. **Learning/exploration** — understand what happens on the wire when you hit the REST API
-4. **Testing** — verify custom plugin transport actions serialize correctly
+### Done
 
-## Features (Prioritized)
+- [x] VInt/VLong/ZLong decoders
+- [x] Fixed header parsing (23 bytes)
+- [x] Status byte flags (u8 wrapper with methods)
+- [x] Version ID decoding (OS vs ES detection, semver extraction)
+- [x] Variable header parsing (thread context headers, action name)
+- [x] String decoding (VInt length prefix + UTF-8)
+- [x] Collection helpers (string_list, string_map, string_set_map)
+- [x] Full message envelope parser
+- [x] CLI: `os-transport decode <hex>` — parse single message
+- [x] CLI: `os-transport read <pcap>` — parse all messages from pcap
+- [x] Pcap file reading (pcap-parser + etherparse)
+- [x] TCP stream reassembly (length-based, no magic scanning)
+- [x] 32 unit tests passing
+- [x] Test data: basic.pcap (292 messages, 3-node OS 3.7.0 cluster)
+- [x] Helper scripts (capture.sh, peek.py, actions.py)
+- [x] Protocol docs (protocol.md, body-decoding.md, output-format.md)
+- [x] Full action catalog (docs/actions.md)
 
-### Phase 1: Core Protocol Parser (library)
+### Next Up
 
-The foundation. Parse raw bytes into structured messages.
+- [ ] Body decoders (see Body Decoding section below)
+- [ ] Verbose hex-annotated output mode (`-v`)
+- [ ] Request/response matching with latency calculation
+- [ ] Filtering (`--action`, `--exclude`)
+- [ ] Stats mode (aggregate counts, sizes, latencies per action)
+- [ ] Live capture mode
+- [ ] Decompression (deflate body when compressed flag set)
 
-- [ ] VInt/VLong/ZLong decoders
-- [ ] Fixed header parsing (23 bytes)
-- [ ] Status byte flag decoding
-- [ ] Version ID decoding (OS vs ES detection, semver extraction)
-- [ ] Variable header parsing (thread context headers, action name)
-- [ ] String decoding (VInt length prefix + UTF-8)
-- [ ] Unit tests with hand-crafted byte sequences
+## Body Decoding
 
-### Phase 2: Decode CLI (offline parsing)
+### Approach: Action-Driven Exploration
 
-Parse hex input or binary files.
+Each action is a window into a subsystem. To implement a body decoder:
 
-- [ ] `os-transport decode --hex "4553..."` — parse a single message from hex
-- [ ] `os-transport decode --file message.bin` — parse from binary file
-- [ ] Pretty-printed output (colored, structured)
-- [ ] Show: magic, request ID, status flags, version, action name, headers, body size
+1. **Trigger the action** — find what REST call or cluster event produces it
+2. **Capture it** — tcpdump the transport traffic
+3. **Trace the Java source** — read `writeTo()`/`StreamInput` constructor
+4. **Implement decoder** — translate field-by-field to Rust
+5. **Verify** — decode captured bytes, check fields make sense
 
-### Phase 3: Pcap Reader
+This is also how we learn internals — understanding the payload means understanding the subsystem.
 
-Parse captured traffic offline.
+### How to Trigger Actions
 
-- [ ] `os-transport read capture.pcap` — parse all messages from a pcap file
-- [ ] TCP stream reassembly (messages span packets, multiple messages per packet)
-- [ ] Connection tracking (identify node pairs)
-- [ ] Request/response matching by request ID
-- [ ] Latency calculation (time between request and response)
+| Action | How to trigger |
+|--------|---------------|
+| `internal:transport/handshake` | Any new node connection (start a node) |
+| `internal:coordination/fault_detection/follower_check` | Always running (leader → followers, every 1s) |
+| `internal:coordination/fault_detection/leader_check` | Always running (followers → leader, every 1s) |
+| `cluster:monitor/health` | `curl localhost:9200/_cluster/health` |
+| `cluster:monitor/state` | `curl localhost:9200/_cluster/state` |
+| `cluster:monitor/nodes/stats` | `curl localhost:9200/_nodes/stats` |
+| `cluster:monitor/nodes/info` | `curl localhost:9200/_nodes` |
+| `indices:admin/create` | `curl -X PUT localhost:9200/my-index` |
+| `indices:admin/delete` | `curl -X DELETE localhost:9200/my-index` |
+| `indices:admin/mapping/put` | `curl -X PUT localhost:9200/my-index/_mapping -d '{...}'` |
+| `indices:admin/refresh` | `curl -X POST localhost:9200/my-index/_refresh` |
+| `indices:data/write/index` | `curl -X POST localhost:9200/my-index/_doc -d '{...}'` |
+| `indices:data/write/bulk` | `curl -X POST localhost:9200/_bulk --data-binary @bulk.json` |
+| `indices:data/read/search` | `curl localhost:9200/my-index/_search` |
+| `indices:data/read/get` | `curl localhost:9200/my-index/_doc/1` |
+| `cluster:admin/snapshot/create` | `curl -X PUT localhost:9200/_snapshot/repo/snap1` |
+| `internal:cluster/coordination/publish_state` | Any cluster state change (create index, add node) |
+| `internal:index/shard/recovery/*` | Create index with replicas, or restart a node |
+| `indices:admin/publishCheckpoint` | Segment replication enabled + indexing |
 
-### Phase 4: Live Capture
+### Decoder Priority
 
-Sniff traffic in real-time.
+**Tier 0 — Generic (all messages):**
+- Ping (no body, just detect it)
+- Error/exception response (recursive exception format)
+- TaskId prefix (all requests start with this)
 
-- [ ] `os-transport capture --port 9300` — live packet capture
-- [ ] Real-time output as messages arrive
-- [ ] Filter by action: `--action "indices:data/read/search*"`
-- [ ] Filter by node/IP: `--node 10.0.1.5`
-- [ ] Summary on exit (message counts, avg latencies)
+**Tier 1 — High frequency (always on wire):**
+- `internal:transport/handshake` req/rsp
+- `internal:coordination/fault_detection/follower_check` req/rsp
+- `internal:coordination/fault_detection/leader_check` req/rsp
 
-### Phase 5: Body Decompression
+**Tier 2 — Cluster ops:**
+- `cluster:monitor/health` req/rsp
+- `cluster:monitor/state` req/rsp
+- `internal:cluster/coordination/publish_state` req/rsp
+- `internal:cluster/coordination/commit_state` req/rsp
 
-Handle compressed messages.
+**Tier 3 — Search path:**
+- `indices:data/read/search` req/rsp
+- `indices:data/read/search[phase/query]` req/rsp
+- `indices:data/read/search[phase/fetch/id]` req/rsp
+- `indices:data/read/search[can_match]` req/rsp
 
-- [ ] Detect compression flag in status byte
-- [ ] Deflate decompression of message body
-- [ ] Show decompressed size vs wire size
+**Tier 4 — Write path:**
+- `indices:data/write/bulk` req/rsp
+- `indices:data/write/index` req/rsp
+- `indices:admin/create` req/rsp
 
-### Phase 6: Stats Mode
+**Tier 5 — Recovery:**
+- `internal:index/shard/recovery/start_recovery` req/rsp
+- `internal:index/shard/recovery/file_chunk` req/rsp
+- `internal:index/shard/recovery/translog_ops` req/rsp
+- `internal:index/shard/recovery/finalize` req/rsp
 
-Aggregate analysis.
+**Tier 6 — Everything else:** raw hex fallback
 
-- [ ] `os-transport stats capture.pcap` — summary statistics
-- [ ] Messages per action (count, avg size, p50/p99 latency)
-- [ ] Compression ratio per action
-- [ ] Busiest node pairs
-- [ ] Error rate per action
-- [ ] Timeline view (messages per second)
+### Body Format by Message Type
 
-### Phase 7: Body Decoders (stretch)
-
-Decode well-known action bodies into readable form.
-
-- [ ] `cluster:monitor/health` — ClusterHealthRequest/Response
-- [ ] `indices:data/read/search` — SearchRequest (partial, complex)
-- [ ] `internal:cluster/state` — ClusterStateRequest
-- [ ] Pluggable decoder trait for adding more
+| Type | Condition | Body starts with |
+|------|-----------|-----------------|
+| Ping | msg_len field = -1 (0xFFFFFFFF) | No body at all |
+| Action request | `!is_response` | TaskId (string + optional long) + action fields |
+| Action response | `is_response && !is_error` | Action-specific fields (no base prefix) |
+| Error response | `is_response && is_error` | Exception format (type-tagged, recursive) |
 
 ## Architecture
 
 ```
 src/
 ├── main.rs                 — CLI entry point (clap)
-├── lib.rs                  — Library root
 ├── protocol/
-│   ├── mod.rs
+│   ├── mod.rs              — pub uses
 │   ├── vint.rs             — VInt/VLong/ZLong encoding
-│   ├── header.rs           — Fixed + variable header
-│   ├── status.rs           — Status byte flags
+│   ├── string.rs           — Length-prefixed strings
+│   ├── collections.rs      — String list/map/set-map helpers
+│   ├── status.rs           — Status byte flags (u8 wrapper)
 │   ├── version.rs          — Version ID ↔ semver
-│   ├── message.rs          — Full message struct
-│   └── string.rs           — String/collection decoding
+│   ├── header.rs           — Fixed 23-byte header
+│   ├── var_header.rs       — Variable header (thread context, action)
+│   └── message.rs          — Full message envelope
 ├── capture/
 │   ├── mod.rs
 │   ├── pcap.rs             — Pcap file reader
-│   ├── live.rs             — Live capture (libpcap)
 │   └── reassembly.rs       — TCP stream reassembly
-├── decode/
-│   ├── mod.rs
-│   ├── thread_context.rs   — Variable header (thread context)
-│   └── bodies/             — Per-action body decoders
-│       ├── mod.rs
-│       └── cluster_health.rs
-├── output/
-│   ├── mod.rs
-│   ├── pretty.rs           — Colored terminal output
-│   ├── json.rs             — JSON output
-│   └── stats.rs            — Aggregated stats
-└── cli/
-    ├── mod.rs
-    ├── decode.rs           — decode subcommand
-    ├── read.rs             — read subcommand
-    ├── capture.rs          — capture subcommand
-    └── stats.rs            — stats subcommand
+└── body/                   — (planned) Per-action body decoders
+    ├── mod.rs              — Decoder trait, registry, Field/FieldValue types
+    ├── error.rs            — Exception decoder
+    ├── handshake.rs        — Transport handshake
+    ├── cluster_health.rs   — cluster:monitor/health
+    └── ...
 ```
-
-## Crates
-
-| Crate | Purpose |
-|-------|---------|
-| `clap` | CLI argument parsing |
-| `flate2` | Deflate decompression |
-| `pcap` | Pcap file reading + live capture |
-| `etherparse` | TCP/IP packet parsing |
-| `colored` | Terminal colors |
-| `serde` + `serde_json` | JSON output |
-| `anyhow` | Error handling |
-
-## Build Order
-
-Start bottom-up. Each phase builds on the previous.
-
-1. **`protocol/vint.rs`** — pure functions, easy to test, no dependencies
-2. **`protocol/status.rs`** — trivial bit manipulation
-3. **`protocol/version.rs`** — version ID math
-4. **`protocol/string.rs`** — uses vint
-5. **`protocol/header.rs`** — combines all of the above
-6. **`decode/thread_context.rs`** — parses variable header using string/vint
-7. **`protocol/message.rs`** — full message struct tying it together
-8. **CLI `decode`** — first usable command
-9. **TCP reassembly** — the hard part
-10. **Pcap reader** — uses reassembly
-11. **Live capture** — same logic, different input source
-
-## Verification Strategy
-
-- Hand-craft test bytes based on the protocol spec in `docs/protocol.md`
-- Capture real traffic from a local 3-node cluster (`scripts/experimental/run.sh`)
-- Compare parser output against OpenSearch TRACE logs (which show request IDs, actions, sizes)
-- Cross-reference with Wireshark raw view
 
 ## Non-Goals (for now)
 
-- Writing/sending messages (this is read-only, a parser not a client)
-- Full body decoding for all actions (too many, evolve over time)
-- TLS decryption (would need key material, complex)
+- Writing/sending messages (read-only parser, not a client)
+- Full body decoding for all 200+ actions (grow over time)
+- TLS decryption (needs key material)
 - Windows support (Linux/macOS only)

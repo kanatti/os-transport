@@ -61,6 +61,20 @@ cargo build --release
 See `docs/` for full protocol documentation:
 
 - `docs/protocol.md` — wire format, encoding rules, byte-level examples
+- `docs/actions.md` — complete catalog of 200+ transport actions by category
 - `docs/body-decoding.md` — approach for decoding action-specific payloads
 - `docs/output-format.md` — output format specification
+- `docs/reading-order.md` — suggested order for reading the source
 - `docs/tcpdump.md` — capturing traffic with tcpdump
+
+## Understanding OpenSearch Through Actions
+
+Every REST API call, cluster event, or internal coordination step becomes one or more transport actions on the wire. Each action carries a serialized payload that reveals how the subsystem works internally.
+
+By decoding these payloads action-by-action, you learn the system from the inside out:
+- **Search:** how queries scatter to shards, what the query/fetch phases carry
+- **Indexing:** how bulk requests fan out, how replicas get written
+- **Coordination:** how leader election, state publishing, and fault detection work
+- **Recovery:** how shards rebuild — file lists, chunks, translog replay
+
+The approach: trigger an action (REST call or cluster event), capture the traffic, trace the Java serialization code, implement a decoder, verify against real bytes. Each decoded action is a new piece of the architecture understood.
